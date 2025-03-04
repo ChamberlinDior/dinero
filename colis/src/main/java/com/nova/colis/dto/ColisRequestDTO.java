@@ -7,6 +7,7 @@ import com.nova.colis.model.TypeColis;
 import jakarta.validation.constraints.NotNull;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 public class ColisRequestDTO {
 
@@ -63,6 +64,12 @@ public class ColisRequestDTO {
     private String historiqueSuivi;
     private String coordonneesGPS;
     private String preuveLivraison;
+
+    /**
+     * Nouveau champ : si l'on souhaite que le frontend puisse envoyer
+     * des photos du colis au format base64.
+     */
+    private List<String> photosBase64;  // Ajout
 
     public ColisRequestDTO() {
     }
@@ -307,5 +314,15 @@ public class ColisRequestDTO {
 
     public void setPreuveLivraison(String preuveLivraison) {
         this.preuveLivraison = preuveLivraison;
+    }
+
+    // --- Getter/Setter pour le nouveau champ ---
+
+    public List<String> getPhotosBase64() {
+        return photosBase64;
+    }
+
+    public void setPhotosBase64(List<String> photosBase64) {
+        this.photosBase64 = photosBase64;
     }
 }

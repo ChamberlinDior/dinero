@@ -1,8 +1,9 @@
 package com.nova.colis.model;
 
 import jakarta.persistence.*;
-
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -72,7 +73,7 @@ public class Colis {
     private Double commissionPlateforme;
 
     @Enumerated(EnumType.STRING)
-    private ModePaiement modePaiement;    // ESPECES, MOBILE_MONEY, CARTE_BANCAIRE, PAYPAL
+    private ModePaiement modePaiement;     // ESPECES, MOBILE_MONEY, CARTE_BANCAIRE, PAYPAL
     @Enumerated(EnumType.STRING)
     private StatutPaiement statutPaiement; // Par exemple : PAYE, EN_ATTENTE, etc.
 
@@ -93,6 +94,14 @@ public class Colis {
     private String coordonneesGPS;       // dernière position
 
     private String preuveLivraison;      // photo / signature
+
+    /**
+     * Relation OneToMany pour stocker plusieurs photos du colis.
+     * cascade = ALL => toute opération sur Colis se répercute sur les Photos
+     * orphanRemoval = true => si une photo est retirée de la liste, elle est supprimée en base
+     */
+    @OneToMany(mappedBy = "colis", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<ColisPhoto> photos = new ArrayList<>();
 
     /**
      * Constructeur par défaut :
@@ -324,8 +333,6 @@ public class Colis {
         this.dateLivraisonEffective = dateLivraisonEffective;
     }
 
-    // Méthodes de tarification
-
     public Double getPrixTotal() {
         return prixTotal;
     }
@@ -397,6 +404,16 @@ public class Colis {
     public void setPreuveLivraison(String preuveLivraison) {
         this.preuveLivraison = preuveLivraison;
     }
+
+    // --- Relation Photos ---
+    public List<ColisPhoto> getPhotos() {
+        return photos;
+    }
+
+    public void setPhotos(List<ColisPhoto> photos) {
+        this.photos = photos;
+    }
+    // -----------------------
 
     @Override
     public boolean equals(Object o) {

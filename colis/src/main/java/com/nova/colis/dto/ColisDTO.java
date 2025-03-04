@@ -6,6 +6,7 @@ import com.nova.colis.model.StatutPaiement;
 import com.nova.colis.model.TypeColis;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 public class ColisDTO {
 
@@ -55,6 +56,11 @@ public class ColisDTO {
      * Nouveau champ pour renvoyer les informations spécifiques au paiement.
      */
     private String paiementInfo;
+
+    /**
+     * Nouveau champ : liste des photos du colis, encodées en base64.
+     */
+    private List<String> photosBase64;  // Ajout
 
     public ColisDTO() {
     }
@@ -347,5 +353,15 @@ public class ColisDTO {
 
     public void setPreuveLivraison(String preuveLivraison) {
         this.preuveLivraison = preuveLivraison;
+    }
+
+    // --- Getter/Setter pour le nouveau champ ---
+
+    public List<String> getPhotosBase64() {
+        return photosBase64;
+    }
+
+    public void setPhotosBase64(List<String> photosBase64) {
+        this.photosBase64 = photosBase64;
     }
 }

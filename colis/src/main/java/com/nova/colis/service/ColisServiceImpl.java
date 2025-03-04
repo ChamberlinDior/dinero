@@ -6,23 +6,28 @@ import com.nova.colis.dto.ColisRequestDTO;
 import com.nova.colis.dto.LivreurDTO;
 import com.nova.colis.exception.ResourceNotFoundException;
 import com.nova.colis.model.Colis;
+import com.nova.colis.model.ColisPhoto;
 import com.nova.colis.model.StatutColis;
+import com.nova.colis.repository.ColisPhotoRepository; // Pour manipuler les photos
 import com.nova.colis.repository.ColisRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Locale;
-import java.util.UUID;
+import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * Implémentation de ColisService avec gestion des photos.
+ */
 @Service
 public class ColisServiceImpl implements ColisService {
 
     @Autowired
     private ColisRepository colisRepository;
+
+    @Autowired
+    private ColisPhotoRepository colisPhotoRepository;  // Nouveau pour gérer la table photos
 
     // Service pour récupérer les informations du client
     @Autowired
@@ -36,16 +41,22 @@ public class ColisServiceImpl implements ColisService {
     @Autowired
     private FirebaseMessagingService firebaseMessagingService;
 
+    // ==========================================================
+    // 1) Méthodes CRUD / Statut / Paiement (existant)
+    // ==========================================================
+
     @Override
     public ColisDTO createColis(ColisRequestDTO dto) {
         Colis colis = mapToEntity(dto);
         colis.setReferenceColis("COL-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase());
+
         // Initialisation de la géolocalisation à partir des coordonnées du client
         ClientDTO clientDTO = clientService.getClientById(dto.getClientId());
         if (clientDTO.getLatitude() != null && clientDTO.getLongitude() != null) {
             String coords = String.format(Locale.US, "%.6f,%.6f", clientDTO.getLatitude(), clientDTO.getLongitude());
             colis.setCoordonneesGPS(coords);
         }
+
         calculTarif(colis);
         Colis saved = colisRepository.save(colis);
         return mapToDTO(saved);
@@ -69,6 +80,7 @@ public class ColisServiceImpl implements ColisService {
     public ColisDTO updateColis(Long id, ColisRequestDTO dto) {
         Colis colis = colisRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Colis", "id", id));
+
         updateEntityFromDTO(colis, dto);
         calculTarif(colis);
         Colis updated = colisRepository.save(colis);
@@ -91,6 +103,7 @@ public class ColisServiceImpl implements ColisService {
     public ColisDTO updateStatutColis(Long id, String nouveauStatut) {
         Colis colis = colisRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Colis", "id", id));
+
         StatutColis statutEnum = StatutColis.valueOf(nouveauStatut);
 
         if (statutEnum == StatutColis.RECUPERE) {
@@ -170,6 +183,7 @@ public class ColisServiceImpl implements ColisService {
     public ColisDTO enregistrerPaiement(Long id, ColisRequestDTO dtoPaiement) {
         Colis colis = colisRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Colis", "id", id));
+
         if (dtoPaiement.getModePaiement() != null) {
             colis.setModePaiement(dtoPaiement.getModePaiement());
         }
@@ -183,6 +197,57 @@ public class ColisServiceImpl implements ColisService {
         return mapToDTO(saved);
     }
 
+    // ==========================================================
+    // 2) NOUVELLES MÉTHODES DE GESTION DES PHOTOS
+    // ==========================================================
+
+    @Override
+    public List<ColisPhoto> getColisPhotos(Long colisId) {
+        Colis colis = colisRepository.findById(colisId)
+                .orElseThrow(() -> new ResourceNotFoundException("Colis", "id", colisId));
+        // Les photos sont chargées en lazy, mais grâce à la relation OneToMany
+        // on peut les récupérer ici si la session est encore ouverte
+        return colis.getPhotos();
+    }
+
+    @Override
+    public void addPhotoToColis(Long colisId, byte[] imageBytes) {
+        Colis colis = colisRepository.findById(colisId)
+                .orElseThrow(() -> new ResourceNotFoundException("Colis", "id", colisId));
+
+        // Créer la nouvelle photo
+        ColisPhoto newPhoto = new ColisPhoto(imageBytes, colis);
+        // Ajouter à la liste
+        colis.getPhotos().add(newPhoto);
+
+        // Comme cascade=ALL, un simple save du Colis persiste la photo
+        colisRepository.save(colis);
+        // ou éventuellement colisPhotoRepository.save(newPhoto);
+        // (dans la plupart des cas, le save du Colis suffit)
+    }
+
+    @Override
+    public void removePhotoFromColis(Long colisId, Long photoId) {
+        Colis colis = colisRepository.findById(colisId)
+                .orElseThrow(() -> new ResourceNotFoundException("Colis", "id", colisId));
+
+        // Rechercher la photo dans la liste
+        ColisPhoto target = colis.getPhotos().stream()
+                .filter(p -> p.getId().equals(photoId))
+                .findFirst()
+                .orElseThrow(() -> new ResourceNotFoundException("Photo", "id", photoId));
+
+        // Retirer la photo => orphanRemoval = true => suppression automatique
+        colis.getPhotos().remove(target);
+
+        // Mettre à jour
+        colisRepository.save(colis);
+    }
+
+    // ==========================================================
+    // 3) Méthodes internes de mapping
+    // ==========================================================
+
     private void calculTarif(Colis colis) {
         if (colis.getPoids() == null) {
             colis.setPoids(0.0);
@@ -190,6 +255,7 @@ public class ColisServiceImpl implements ColisService {
         double poids = colis.getPoids();
         double basePrice = 0.0;
         String expeditionType = colis.getVilleDestination();
+
         switch (colis.getTypeColis()) {
             case STANDARD:
                 if ("Urbain".equalsIgnoreCase(expeditionType)) {
@@ -246,11 +312,16 @@ public class ColisServiceImpl implements ColisService {
                 }
                 break;
         }
+
+        // Si assurance cochée => +5%
         if (Boolean.TRUE.equals(colis.getAssurance())) {
             basePrice *= 1.05;
         }
+
+        // 75% livreur / 25% plateforme
         double livreurShare = basePrice * 0.75;
         double plateformeShare = basePrice * 0.25;
+
         colis.setPrixTotal(basePrice);
         colis.setFraisLivraison(livreurShare);
         colis.setCommissionPlateforme(plateformeShare);
@@ -263,6 +334,7 @@ public class ColisServiceImpl implements ColisService {
     }
 
     private void updateEntityFromDTO(Colis c, ColisRequestDTO dto) {
+        // Code standard pour mapper le DTO vers l'entité (identique à votre code existant)
         if (dto.getTypeColis() != null) {
             c.setTypeColis(dto.getTypeColis());
         }
@@ -323,6 +395,7 @@ public class ColisServiceImpl implements ColisService {
     }
 
     private ColisDTO mapToDTO(Colis c) {
+        // Code standard pour mapper l’entité vers le DTO (identique à votre code existant)
         ColisDTO dto = new ColisDTO();
         dto.setId(c.getId());
         dto.setReferenceColis(c.getReferenceColis());
