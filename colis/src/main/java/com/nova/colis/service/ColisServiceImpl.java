@@ -8,7 +8,7 @@ import com.nova.colis.exception.ResourceNotFoundException;
 import com.nova.colis.model.Colis;
 import com.nova.colis.model.ColisPhoto;
 import com.nova.colis.model.StatutColis;
-import com.nova.colis.repository.ColisPhotoRepository; // Pour manipuler les photos
+import com.nova.colis.repository.ColisPhotoRepository;
 import com.nova.colis.repository.ColisRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.Base64;
 
 /**
  * Implémentation de ColisService avec gestion des photos.
@@ -27,7 +28,7 @@ public class ColisServiceImpl implements ColisService {
     private ColisRepository colisRepository;
 
     @Autowired
-    private ColisPhotoRepository colisPhotoRepository;  // Nouveau pour gérer la table photos
+    private ColisPhotoRepository colisPhotoRepository;  // Pour gérer la table des photos
 
     // Service pour récupérer les informations du client
     @Autowired
@@ -42,23 +43,40 @@ public class ColisServiceImpl implements ColisService {
     private FirebaseMessagingService firebaseMessagingService;
 
     // ==========================================================
-    // 1) Méthodes CRUD / Statut / Paiement (existant)
+    // 1) Méthodes CRUD / Statut / Paiement
     // ==========================================================
 
     @Override
     public ColisDTO createColis(ColisRequestDTO dto) {
+        // 1) On mappe le DTO vers l'entité
         Colis colis = mapToEntity(dto);
         colis.setReferenceColis("COL-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase());
 
-        // Initialisation de la géolocalisation à partir des coordonnées du client
+        // 2) Initialisation de la géolocalisation depuis le client (si dispo)
         ClientDTO clientDTO = clientService.getClientById(dto.getClientId());
         if (clientDTO.getLatitude() != null && clientDTO.getLongitude() != null) {
-            String coords = String.format(Locale.US, "%.6f,%.6f", clientDTO.getLatitude(), clientDTO.getLongitude());
+            String coords = String.format(Locale.US, "%.6f,%.6f",
+                    clientDTO.getLatitude(),
+                    clientDTO.getLongitude());
             colis.setCoordonneesGPS(coords);
         }
 
+        // 3) Gérer les photos en base64 (si le front en envoie dans dto.getPhotosBase64())
+        if (dto.getPhotosBase64() != null && !dto.getPhotosBase64().isEmpty()) {
+            for (String base64Str : dto.getPhotosBase64()) {
+                byte[] imageBytes = Base64.getDecoder().decode(base64Str);
+                ColisPhoto photo = new ColisPhoto(imageBytes, colis);
+                colis.getPhotos().add(photo);
+            }
+        }
+
+        // 4) Calcul des tarifs
         calculTarif(colis);
+
+        // 5) On sauvegarde en base
         Colis saved = colisRepository.save(colis);
+
+        // 6) On retourne le DTO vers le front
         return mapToDTO(saved);
     }
 
@@ -71,7 +89,8 @@ public class ColisServiceImpl implements ColisService {
 
     @Override
     public List<ColisDTO> getAllColis() {
-        return colisRepository.findAll().stream()
+        return colisRepository.findAll()
+                .stream()
                 .map(this::mapToDTO)
                 .collect(Collectors.toList());
     }
@@ -81,8 +100,13 @@ public class ColisServiceImpl implements ColisService {
         Colis colis = colisRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Colis", "id", id));
 
+        // Mettre à jour l'entité depuis le DTO (champs existants)
         updateEntityFromDTO(colis, dto);
+
+        // Calculer/Mettre à jour les tarifs
         calculTarif(colis);
+
+        // Sauvegarde
         Colis updated = colisRepository.save(colis);
         return mapToDTO(updated);
     }
@@ -96,8 +120,7 @@ public class ColisServiceImpl implements ColisService {
 
     /**
      * Mise à jour du statut du colis et de sa géolocalisation en fonction du nouveau statut.
-     * Lorsqu'il passe à RECUPERE (c'est-à-dire que le livreur est arrivé pour récupérer le colis),
-     * une notification push est envoyée au client.
+     * Lorsqu'il passe à RECUPERE, on envoie une notification push au client, etc.
      */
     @Override
     public ColisDTO updateStatutColis(Long id, String nouveauStatut) {
@@ -106,17 +129,22 @@ public class ColisServiceImpl implements ColisService {
 
         StatutColis statutEnum = StatutColis.valueOf(nouveauStatut);
 
+        // Logique de changement de statut et géolocalisation
         if (statutEnum == StatutColis.RECUPERE) {
             if (colis.getLivreurId() == null) {
-                throw new IllegalArgumentException("Le colis ne peut être récupéré sans un livreur assigné.");
+                throw new IllegalArgumentException("Le colis ne peut être récupéré sans livreur assigné.");
             }
-            // Vérifier si le livreur a déjà un colis actif
-            List<StatutColis> statutsActifs = Arrays.asList(StatutColis.RECUPERE, StatutColis.EN_COURS_DE_LIVRAISON);
-            List<Colis> colisActifs = colisRepository.findByLivreurIdAndStatutColisIn(colis.getLivreurId(), statutsActifs);
+            List<StatutColis> statutsActifs = Arrays.asList(
+                    StatutColis.RECUPERE,
+                    StatutColis.EN_COURS_DE_LIVRAISON
+            );
+            // Vérif : si ce livreur a déjà un colis en cours
+            List<Colis> colisActifs = colisRepository
+                    .findByLivreurIdAndStatutColisIn(colis.getLivreurId(), statutsActifs);
             if (!colisActifs.isEmpty()) {
                 throw new IllegalStateException("Ce livreur a déjà un colis en cours de livraison.");
             }
-            // Mise à jour de la géolocalisation en fonction de la position actuelle du livreur
+            // Récup coordonnées livreur
             LivreurDTO livreurDTO = livreurService.getLivreurById(colis.getLivreurId());
             if (livreurDTO.getLatitudeActuelle() != null && livreurDTO.getLongitudeActuelle() != null) {
                 String coords = String.format(Locale.US, "%.6f,%.6f",
@@ -124,6 +152,7 @@ public class ColisServiceImpl implements ColisService {
                 colis.setCoordonneesGPS(coords);
             }
             colis.setDatePriseEnCharge(LocalDateTime.now());
+
         } else if (statutEnum == StatutColis.EN_COURS_DE_LIVRAISON) {
             if (colis.getLivreurId() != null) {
                 LivreurDTO livreurDTO = livreurService.getLivreurById(colis.getLivreurId());
@@ -134,9 +163,12 @@ public class ColisServiceImpl implements ColisService {
                 }
             }
             colis.setDatePriseEnCharge(LocalDateTime.now());
+
         } else if (statutEnum == StatutColis.LIVRE) {
             colis.setDateLivraisonEffective(LocalDateTime.now());
+
         } else if (statutEnum == StatutColis.EN_ATTENTE) {
+            // S'il n'a pas encore de coord GPS, on peut récupérer celles du client
             if (colis.getCoordonneesGPS() == null) {
                 ClientDTO clientDTO = clientService.getClientById(colis.getClientId());
                 if (clientDTO.getLatitude() != null && clientDTO.getLongitude() != null) {
@@ -152,14 +184,14 @@ public class ColisServiceImpl implements ColisService {
         Colis saved = colisRepository.save(colis);
         ColisDTO dto = mapToDTO(saved);
 
-        // Envoi de la notification push au client
+        // Notification push au client
         ClientDTO clientDTO = clientService.getClientById(saved.getClientId());
         if (clientDTO != null && clientDTO.getFcmToken() != null) {
             String title = "Mise à jour de votre commande";
             String message;
             switch (saved.getStatutColis()) {
                 case RECUPERE:
-                    message = "Le livreur est en cours route afin de récupérer votre colis " + saved.getReferenceColis() + ".";
+                    message = "Le livreur est en cours de route pour récupérer votre colis " + saved.getReferenceColis();
                     break;
                 case EN_COURS_DE_LIVRAISON:
                     message = "Votre colis " + saved.getReferenceColis() + " est en cours de livraison.";
@@ -193,20 +225,20 @@ public class ColisServiceImpl implements ColisService {
         if (dtoPaiement.getPaiementInfo() != null) {
             colis.setPaiementInfo(dtoPaiement.getPaiementInfo());
         }
+
         Colis saved = colisRepository.save(colis);
         return mapToDTO(saved);
     }
 
     // ==========================================================
-    // 2) NOUVELLES MÉTHODES DE GESTION DES PHOTOS
+    // 2) Méthodes de gestion des PHOTOS
     // ==========================================================
 
     @Override
     public List<ColisPhoto> getColisPhotos(Long colisId) {
         Colis colis = colisRepository.findById(colisId)
                 .orElseThrow(() -> new ResourceNotFoundException("Colis", "id", colisId));
-        // Les photos sont chargées en lazy, mais grâce à la relation OneToMany
-        // on peut les récupérer ici si la session est encore ouverte
+        // Retourne la liste des photos associées
         return colis.getPhotos();
     }
 
@@ -215,15 +247,11 @@ public class ColisServiceImpl implements ColisService {
         Colis colis = colisRepository.findById(colisId)
                 .orElseThrow(() -> new ResourceNotFoundException("Colis", "id", colisId));
 
-        // Créer la nouvelle photo
         ColisPhoto newPhoto = new ColisPhoto(imageBytes, colis);
-        // Ajouter à la liste
         colis.getPhotos().add(newPhoto);
 
-        // Comme cascade=ALL, un simple save du Colis persiste la photo
+        // Sauvegarde (cascade = ALL => enregistre aussi la photo)
         colisRepository.save(colis);
-        // ou éventuellement colisPhotoRepository.save(newPhoto);
-        // (dans la plupart des cas, le save du Colis suffit)
     }
 
     @Override
@@ -231,23 +259,26 @@ public class ColisServiceImpl implements ColisService {
         Colis colis = colisRepository.findById(colisId)
                 .orElseThrow(() -> new ResourceNotFoundException("Colis", "id", colisId));
 
-        // Rechercher la photo dans la liste
+        // On trouve la photo voulue
         ColisPhoto target = colis.getPhotos().stream()
                 .filter(p -> p.getId().equals(photoId))
                 .findFirst()
                 .orElseThrow(() -> new ResourceNotFoundException("Photo", "id", photoId));
 
-        // Retirer la photo => orphanRemoval = true => suppression automatique
+        // On la retire => orphanRemoval = true => la photo sera supprimée
         colis.getPhotos().remove(target);
 
-        // Mettre à jour
+        // On sauvegarde
         colisRepository.save(colis);
     }
 
     // ==========================================================
-    // 3) Méthodes internes de mapping
+    // 3) Méthodes internes : calculTarif, mapToDTO, etc.
     // ==========================================================
 
+    /**
+     * Calcule le prix total, la répartition livreur/plateforme, etc.
+     */
     private void calculTarif(Colis colis) {
         if (colis.getPoids() == null) {
             colis.setPoids(0.0);
@@ -275,6 +306,7 @@ public class ColisServiceImpl implements ColisService {
                     else if (poids <= 30) basePrice = 196000;
                 }
                 break;
+
             case OBJET_DE_VALEUR:
                 if ("Urbain".equalsIgnoreCase(expeditionType)) {
                     if (poids <= 5) basePrice = 4000;
@@ -293,6 +325,7 @@ public class ColisServiceImpl implements ColisService {
                     else if (poids <= 30) basePrice = 205800;
                 }
                 break;
+
             case VOLUMINEUX:
                 if ("Urbain".equalsIgnoreCase(expeditionType)) {
                     if (poids <= 5) basePrice = 8000;
@@ -327,14 +360,19 @@ public class ColisServiceImpl implements ColisService {
         colis.setCommissionPlateforme(plateformeShare);
     }
 
+    /**
+     * Mappe un ColisRequestDTO vers un objet Colis (nouveau ou existant).
+     */
     private Colis mapToEntity(ColisRequestDTO dto) {
         Colis c = new Colis();
         updateEntityFromDTO(c, dto);
         return c;
     }
 
+    /**
+     * Met à jour l'entité Colis existante avec les champs du DTO.
+     */
     private void updateEntityFromDTO(Colis c, ColisRequestDTO dto) {
-        // Code standard pour mapper le DTO vers l'entité (identique à votre code existant)
         if (dto.getTypeColis() != null) {
             c.setTypeColis(dto.getTypeColis());
         }
@@ -343,12 +381,16 @@ public class ColisServiceImpl implements ColisService {
         c.setDimensions(dto.getDimensions());
         c.setValeurDeclaree(dto.getValeurDeclaree());
         c.setAssurance(dto.getAssurance());
+
         if (dto.getClientId() != null) {
             c.setClientId(dto.getClientId());
         }
+
         c.setNomExpediteur(dto.getNomExpediteur());
         c.setTelephoneExpediteur(dto.getTelephoneExpediteur());
         c.setEmailExpediteur(dto.getEmailExpediteur());
+
+        // N'autoriser la mise à jour de certains champs (adresse, etc.) que si le colis est EN_ATTENTE
         if (c.getStatutColis() == null || c.getStatutColis() == StatutColis.EN_ATTENTE) {
             if (dto.getAdresseEnlevement() != null) {
                 c.setAdresseEnlevement(dto.getAdresseEnlevement());
@@ -360,12 +402,14 @@ public class ColisServiceImpl implements ColisService {
                 c.setVilleDestination(dto.getVilleDestination());
             }
         }
+
         c.setNomDestinataire(dto.getNomDestinataire());
         c.setTelephoneDestinataire(dto.getTelephoneDestinataire());
         c.setEmailDestinataire(dto.getEmailDestinataire());
         c.setLivreurId(dto.getLivreurId());
         c.setNomLivreur(dto.getNomLivreur());
         c.setTelephoneLivreur(dto.getTelephoneLivreur());
+
         if (dto.getStatutColis() != null) {
             c.setStatutColis(dto.getStatutColis());
         }
@@ -387,15 +431,21 @@ public class ColisServiceImpl implements ColisService {
         if (dto.getPaiementInfo() != null) {
             c.setPaiementInfo(dto.getPaiementInfo());
         }
+
         c.setHistoriqueSuivi(dto.getHistoriqueSuivi());
+
+        // S'il n'y a pas déjà de coordonneesGPS et qu'on en reçoit
         if (c.getCoordonneesGPS() == null && dto.getCoordonneesGPS() != null) {
             c.setCoordonneesGPS(dto.getCoordonneesGPS());
         }
+
         c.setPreuveLivraison(dto.getPreuveLivraison());
     }
 
+    /**
+     * Mappe un objet Colis (entité) vers le DTO ColisDTO.
+     */
     private ColisDTO mapToDTO(Colis c) {
-        // Code standard pour mapper l’entité vers le DTO (identique à votre code existant)
         ColisDTO dto = new ColisDTO();
         dto.setId(c.getId());
         dto.setReferenceColis(c.getReferenceColis());
@@ -433,6 +483,13 @@ public class ColisServiceImpl implements ColisService {
         dto.setCoordonneesGPS(c.getCoordonneesGPS());
         dto.setPreuveLivraison(c.getPreuveLivraison());
         dto.setPaiementInfo(c.getPaiementInfo());
+
+        // Si vous souhaitez renvoyer les photos en base64 dans ColisDTO, vous pouvez faire :
+        // List<String> listBase64 = c.getPhotos().stream()
+        //     .map(photo -> Base64.getEncoder().encodeToString(photo.getImage()))
+        //     .collect(Collectors.toList());
+        // dto.setPhotosBase64(listBase64);
+
         return dto;
     }
 }
