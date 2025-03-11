@@ -27,7 +27,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                         "http://localhost:8080",        // Pour tests locaux
                         "http://192.168.1.37:8080",       // Pour IP locale
                         "exp://127.0.0.1:19000",          // Pour Expo Go en développement
-                        "http://3.137.214.104:8087"        // Pour production (exemple AWS)
+                        "http://3.141.38.188:8087"        // Pour production (exemple AWS)
                 )
                 .withSockJS();
     }
