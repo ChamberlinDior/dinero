@@ -485,10 +485,10 @@ public class ColisServiceImpl implements ColisService {
         dto.setPaiementInfo(c.getPaiementInfo());
 
         // Si vous souhaitez renvoyer les photos en base64 dans ColisDTO, vous pouvez faire :
-        // List<String> listBase64 = c.getPhotos().stream()
-        //     .map(photo -> Base64.getEncoder().encodeToString(photo.getImage()))
-        //     .collect(Collectors.toList());
-        // dto.setPhotosBase64(listBase64);
+         List<String> listBase64 = c.getPhotos().stream()
+             .map(photo -> Base64.getEncoder().encodeToString(photo.getImage()))
+             .collect(Collectors.toList());
+         dto.setPhotosBase64(listBase64);
 
         return dto;
     }
